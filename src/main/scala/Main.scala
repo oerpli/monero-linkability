@@ -36,7 +36,7 @@ object Main {
   def main(args: Array[String]) {
 
     val spark = org.apache.spark.sql.SparkSession.builder
-      .appName("Monero Linkability")
+      .appName("Monero Linkability v2")
       .getOrCreate
 
     // used for SQLSpark API (DataFrame)
@@ -74,74 +74,55 @@ object Main {
         .rdd
 
       // (key_image, [candidate1, candidate2, ...])
-      val tx_inputs = tx_input
-        .groupByKey()
-        .mapValues(iterable => iterable.toSet).collectAsMap()
-      // (input1, false)
-      val input_tx = tx_input.map {
-        case (tx, input) =>
-          input
-      }.distinct()
+      val tx_inputs = Array(
+        tx_input
+          .groupByKey()
+          .mapValues(iterable => mutable.Set(iterable.toSeq: _*))
+          .collectAsMap()
+          .toSeq: _*)
+
+      //   val tx_inputs_map = tx_inputs
+      //     .map(a => (a._1, mutable.Set(a._2.toSeq: _*)))
+      //     .toSeq
+      //     .sortWith(_._1 < _._1)
+      val input_txs = tx_inputs
         .map {
-          case (input) =>
-            (input, -1L)
+          case (tx, inputs) => {
+            inputs.toSeq.map(input => (input, tx))
+          }
         }
-
-      // that's it - nothing more can be done with those RDDs actually ..
-
-      val input_tx_map = collection.mutable.Map(input_tx.collectAsMap().toSeq: _*)
-      val tx_inputs_map = new util.HashMap[Long, util.HashSet[Long]]()
-
-      for ((tx, inputs) <- tx_inputs) {
-        tx_inputs_map.put(tx, new util.HashSet[Long]())
-        for (input <- inputs) {
-          tx_inputs_map.get(tx).add(input)
-        }
-      }
-
+        .flatten
+        .groupBy(_._1)
+        .map(a => (a._1, mutable.Set(a._2.map(_._2).toSeq: _*)))
 
       var numOfIterations = 0
-      var changeHappened = false
-      do {
+      var keysToCheck = mutable.Map(tx_inputs.filter(_._2.size == 1).toSeq: _*)
+
+      while (keysToCheck.size > 0) {
         numOfIterations += 1
-        var keysToRemove = new collection.mutable.HashSet[Long]()
-        var inputsToRemove = new collection.mutable.HashSet[Long]()
-        changeHappened = false
-        val iterator = tx_inputs_map.entrySet.iterator()
-        while (iterator.hasNext) {
-          val pair = iterator.next()
-          var tx = pair.getKey
-          val inputs = pair.getValue
-          if (inputs.size() == 1) {
-            val input = inputs.iterator().next()
-            input_tx_map.put(input, tx)
-            inputsToRemove += input
-            keysToRemove += tx
-            changeHappened = true
-          }
+        var changed = mutable.Map.empty[Long, mutable.Set[Long]] // cache elements that only have one remaining
+        val keys_iterator = keysToCheck.iterator
+        for ((tx_matched, values) <- keysToCheck) { // match transactions with only one input
+          val input = values.min // only one element in Set, so just get any element
+          // Remove inputs used in matched transactions from other Txs
+          input_txs(input)
+            .filter(tx_matched != _)
+            .foreach(tx => {
+              val (_, txinputs) = tx_inputs(tx.asInstanceOf[Int]) // Java only supports Int indexes
+              txinputs.remove(input)
+              // after removing inputs check if only 1 remains, if yes, add to set changed in next iteration
+              if (txinputs.size == 1) {
+                changed.put(tx, txinputs)
+                // changed += ((tx, txinputs)) // need 2 brackets bc of compiler "bug"
+                // https://stackoverflow.com/questions/26606986/scala-add-a-tuple-to-listbuffer?answertab=votes#tab-top
+              }
+            })
         }
-        // remove determined key images
-        for (key <- keysToRemove) {
-          tx_inputs_map.remove(key)
-        }
-        // remove used candidates
-        val value_iterator = tx_inputs_map.values().iterator()
-        while (value_iterator.hasNext) {
-          val values = value_iterator.next()
-          for (input <- inputsToRemove) {
-            values.remove(input)
-          }
-        }
-
-      } while (changeHappened)
-
-      val tx_realInput = new mutable.HashMap[Long, Long]()
-      //prepare result
-      for ((input, tx) <- input_tx_map) {
-        if (tx != -1L) {
-          tx_realInput(tx) = input
-        }
+        keysToCheck = changed
       }
+
+      val tx_realInput =
+        tx_inputs.filter(_._2.size == 1).map(a => (a._1, a._2.min))
       val percentage = tx_realInput.size * 1.0 / tx_inputs.size
 
       //convert Long back to String
