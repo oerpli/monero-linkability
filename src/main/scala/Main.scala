@@ -9,32 +9,30 @@ import org.apache.spark.sql.Row
 
 import scala.collection.mutable
 
-
 object Main {
 
   // https://stackoverflow.com/questions/30304810/dataframe-ified-zipwithindex, second answer
-  def dfZipWithIndex(
-                      df: DataFrame,
-                      offset: Int = 1,
-                      colName: String = "id",
-                      inFront: Boolean = true
-                    ) : DataFrame = {
+  def dfZipWithIndex(df: DataFrame,
+                     offset: Int = 1,
+                     colName: String = "id",
+                     inFront: Boolean = true): DataFrame = {
     df.sqlContext.createDataFrame(
-      df.rdd.zipWithIndex.map(ln =>
-        Row.fromSeq(
-          (if (inFront) Seq(ln._2 + offset) else Seq())
-            ++ ln._1.toSeq ++
-            (if (inFront) Seq() else Seq(ln._2 + offset))
-        )
-      ),
+      df.rdd.zipWithIndex.map(
+        ln =>
+          Row.fromSeq(
+            (if (inFront) Seq(ln._2 + offset) else Seq())
+              ++ ln._1.toSeq ++
+              (if (inFront) Seq() else Seq(ln._2 + offset))
+        )),
       StructType(
-        (if (inFront) Array(StructField(colName,LongType,false)) else Array[StructField]())
+        (if (inFront) Array(StructField(colName, LongType, false))
+         else Array[StructField]())
           ++ df.schema.fields ++
-          (if (inFront) Array[StructField]() else Array(StructField(colName,LongType,false)))
+          (if (inFront) Array[StructField]()
+           else Array(StructField(colName, LongType, false)))
       )
     )
   }
-
   def main(args: Array[String]) {
 
     val spark = org.apache.spark.sql.SparkSession.builder
@@ -44,22 +42,25 @@ object Main {
     // used for SQLSpark API (DataFrame)
     import spark.implicits._
 
-
     try {
       val bucket_name = args(0)
       val input_fn = args(1)
 
       // Load the lines of text
-      val lines = spark.read.format("csv")
+      val lines = spark.read
+        .format("csv")
         .option("header", "true")
         .load("gs://" + bucket_name + "/" + input_fn)
         .toDF("key_image", "coin_candidate")
 
-      //      optimization: numbers as id instead of string hashes
-      val key_image_id = dfZipWithIndex(lines.select("key_image").distinct(), colName = "key_image_id")
+      //		optimization: numbers as id instead of string hashes
+      val key_image_id = dfZipWithIndex(lines.select("key_image").distinct(),
+                                        colName = "key_image_id")
         .withColumnRenamed("key_image", "key_image_join")
-      val candidate_id = dfZipWithIndex(lines.select("coin_candidate").distinct(), colName = "coin_candidate_id")
-        .withColumnRenamed("coin_candidate", "coin_candidate_join")
+      val candidate_id =
+        dfZipWithIndex(lines.select("coin_candidate").distinct(),
+                       colName = "coin_candidate_id")
+          .withColumnRenamed("coin_candidate", "coin_candidate_join")
 
       // (key_image, candidate1)
       // (key_image, candidate2)
@@ -68,9 +69,9 @@ object Main {
         .join(candidate_id, $"coin_candidate" === $"coin_candidate_join")
         .select("key_image_id", "coin_candidate_id")
 
-
-      val tx_input = key_image_candidate.map(row => (row(0).asInstanceOf[Long], row(1).asInstanceOf[Long])).rdd
-
+      val tx_input = key_image_candidate
+        .map(row => (row(0).asInstanceOf[Long], row(1).asInstanceOf[Long]))
+        .rdd
 
       // (key_image, [candidate1, candidate2, ...])
       val tx_inputs = tx_input
@@ -145,11 +146,14 @@ object Main {
 
       //convert Long back to String
       val tx_realInput_rdd = spark.sparkContext.parallelize(tx_realInput.toSeq)
-      val key_image_coin_determined = tx_realInput_rdd.toDF("image_id", "determined_coin_id")
+      val key_image_coin_determined =
+        tx_realInput_rdd.toDF("image_id", "determined_coin_id")
       val determined_coins = key_image_coin_determined
         .join(key_image_id, $"image_id" === $"key_image_id", joinType = "inner")
-        .join(candidate_id, $"determined_coin_id" === $"coin_candidate_id", joinType = "inner")
-          .select("key_image_join", "coin_candidate_join")
+        .join(candidate_id,
+              $"determined_coin_id" === $"coin_candidate_id",
+              joinType = "inner")
+        .select("key_image_join", "coin_candidate_join")
 
       // results are in two columns: key_image_join, coin_candidate_join
 
@@ -167,9 +171,7 @@ object Main {
         write("Number of iterations: " + numOfIterations + "\n")
         close()
       }
-    }
-
-    finally {
+    } finally {
       spark.stop()
     }
   }
